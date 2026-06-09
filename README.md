@@ -1,4 +1,4 @@
-# ABiz — Voice AI for Singapore Clinics
+# Whisper — Voice AI for Singapore Clinics
 
 **Enterprise-grade conversational AI that answers phones, schedules appointments, and triages emergencies for Singapore healthcare practices. PDPA-compliant. Closed-source SaaS.**
 
@@ -20,7 +20,7 @@
 
 ## Architecture Overview
 
-ABiz is a **streaming voice agent** that sits between Twilio’s PSTN and a Singapore clinic’s Practice Management System (PMS). It receives inbound phone calls, transcribes them in real time, runs a deterministic state machine to route the conversation, falls back to an LLM when intent is ambiguous, responds via text-to-speech, and books appointments via the PMS.
+Whisper is a **streaming voice agent** that sits between Twilio’s PSTN and a Singapore clinic’s Practice Management System (PMS). It receives inbound phone calls, transcribes them in real time, runs a deterministic state machine to route the conversation, falls back to an LLM when intent is ambiguous, responds via text-to-speech, and books appointments via the PMS.
 
 ```
   Patient Phone Call
@@ -356,7 +356,7 @@ npm run test         # then test
 | Data | Classification | Storage |
 |---|---|---|
 | Call transcripts | personal data | Encrypted in Postgres (`conversation_turns`), purged per retention policy |
-| Patient demographics | personal data | Encrypted in PMS (not stored in ABiz DB — syncs from PMS) |
+| Patient demographics | personal data | Encrypted in PMS (not stored in Whisper DB — syncs from PMS) |
 | Call metadata (duration, timestamps) | Personal data | Postgres (`call_sessions`), purged per retention policy |
 | Call recordings | personal data | S3 with KMS encryption, lifecycle policy for deletion |
 | API keys / secrets | Secret | Environment variables, never logged or committed |

@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   // Initialize the PDPA-aware structured logger.
   initLogger(config.logLevel);
 
-  safeLog("info", "Starting ABiz Voice AI", {
+  safeLog("info", "Starting Whisper Voice AI", {
     context: {
       env: config.nodeEnv,
       port: config.port,
