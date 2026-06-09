@@ -1,4 +1,4 @@
-# ABiz — Voice AI for Singapore Clinics
+# Whisper — Voice AI for Singapore Clinics
 
 **Enterprise-grade conversational AI that answers phones, schedules appointments, and triages emergencies for Singapore healthcare practices. PDPA-compliant. Closed-source SaaS.**
 
