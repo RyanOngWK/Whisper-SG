@@ -2,9 +2,14 @@
  * HIPAA-aware logging: PII/PHI redaction layer.
  *
  * Every log entry passes through the redactor before reaching the
- * underlying logger (pino / Winston / console).  The redactor
- * strips PII so raw PHI never lands in any persistent log stream.
+ * underlying logger (pino). The redactor strips PII so raw PHI
+ * never lands in any persistent log stream.
+ *
+ * Setup: call `initLogger(level)` once at startup to wire pino,
+ * then use `safeLog()` everywhere for HIPAA-compliant logging.
  */
+
+import pino from "pino";
 
 // Matchers ordered from most-specific to least-specific to avoid
 // partial matches (e.g. "123-45-6789" before "123").
@@ -148,6 +153,7 @@ export interface SafeLogEntry {
 
 /**
  * Create a HIPAA-safe log entry.  All fields are redacted.
+ * Logs are written via pino (structured JSON to stdout).
  */
 export function safeLog(
   level: SafeLogEntry["level"],
@@ -156,7 +162,7 @@ export function safeLog(
     Omit<SafeLogEntry, "level" | "message" | "timestamp">
   >,
 ): SafeLogEntry {
-  return {
+  const entry: SafeLogEntry = {
     level,
     message: redact(message),
     sessionId: extra?.sessionId,
@@ -173,4 +179,48 @@ export function safeLog(
         }
       : undefined,
   };
+
+  // Write to the configured pino logger instance.
+  const logger = getLogger();
+  const pinoLevel = level === "debug" ? "debug"
+    : level === "info" ? "info"
+    : level === "warn" ? "warn"
+    : "error";
+
+  logger[pinoLevel](entry, entry.message);
+
+  return entry;
+}
+
+// ── Logger initialization ──────────────────────────────────────
+
+let _logger: pino.Logger | null = null;
+
+function getLogger(): pino.Logger {
+  _logger ??= pino({
+    level: "info",
+    formatters: {
+      level(label) {
+        return { level: label };
+      },
+    },
+    timestamp: pino.stdTimeFunctions.isoTime,
+  });
+  return _logger;
+}
+
+/**
+ * Initialize the underlying pino logger. Call once at startup.
+ * Defaults to "info" level if not called.
+ */
+export function initLogger(level: "debug" | "info" | "warn" | "error" = "info"): void {
+  _logger = pino({
+    level,
+    formatters: {
+      level(label) {
+        return { level: label };
+      },
+    },
+    timestamp: pino.stdTimeFunctions.isoTime,
+  });
 }

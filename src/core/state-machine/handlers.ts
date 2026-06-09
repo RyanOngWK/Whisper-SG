@@ -116,10 +116,106 @@ export const patientIdentifyHandler: StateHandler = async (
 export const patientRegisterHandler: StateHandler = async (
   _ctx: StateContext,
 ) => {
-  // The orchestrator collects PII through a structured sub-flow
-  // and writes it directly to the PMS via the PMS adapter.
-  // This handler signals completion.
-  return { nextState: "reason_for_visit" };
+  // Enter the multi-turn registration sub-flow.
+  return { nextState: "patient_register_name" };
+};
+
+// ── Registration sub-flow: name ──────────────────────────────────
+
+const NAME_PATTERN = /(?:my name is|i am|i'm|this is)\s+([a-z]+(?:\s+[a-z]+){0,2})/i;
+
+export const patientRegisterNameHandler: StateHandler = async (
+  ctx: StateContext,
+) => {
+  const utterance = ctx.userUtterance.trim();
+
+  // Try to extract a name from natural language.
+  const match = NAME_PATTERN.exec(utterance);
+  if (match?.[1]) {
+    const fullName = match[1].trim();
+    const parts = fullName.split(/\s+/);
+    ctx.session.slotValues.first_name = parts[0] ?? fullName;
+    ctx.session.slotValues.last_name = parts[1] ?? "";
+    return { nextState: "patient_register_dob" };
+  }
+
+  // Check if the utterance itself looks like just a name (no prefix).
+  const words = utterance.split(/\s+/);
+  if (words.length >= 2 && words.length <= 3 && words[0] && /^[A-Z][a-z]+$/.test(words[0])) {
+    ctx.session.slotValues.first_name = words[0];
+    ctx.session.slotValues.last_name = words.slice(1).join(" ");
+    return { nextState: "patient_register_dob" };
+  }
+
+  // Can't extract — delegate to LLM.
+  return { nextState: "fallback_llm", payload: { reason: "register_name" } };
+};
+
+// ── Registration sub-flow: date of birth ─────────────────────────
+
+const DOB_PATTERNS = [
+  /\b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-](?:\d{2}|\d{4})\b/,
+  /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/i,
+  /\b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b/,
+];
+
+export const patientRegisterDobHandler: StateHandler = async (
+  ctx: StateContext,
+) => {
+  const utterance = ctx.userUtterance;
+
+  for (const pattern of DOB_PATTERNS) {
+    const match = pattern.exec(utterance);
+    if (match) {
+      ctx.session.slotValues.date_of_birth = match[0];
+      return { nextState: "patient_register_phone" };
+    }
+  }
+
+  return { nextState: "fallback_llm", payload: { reason: "register_dob" } };
+};
+
+// ── Registration sub-flow: phone ─────────────────────────────────
+
+const PHONE_PATTERN =
+  /(\+1[\s-]?)?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}\b/;
+
+export const patientRegisterPhoneHandler: StateHandler = async (
+  ctx: StateContext,
+) => {
+  const utterance = ctx.userUtterance;
+
+  const match = PHONE_PATTERN.exec(utterance);
+  if (match) {
+    ctx.session.slotValues.phone_number = match[0].replace(/[\s\-()]/g, "");
+    return { nextState: "patient_register_confirm" };
+  }
+
+  return { nextState: "fallback_llm", payload: { reason: "register_phone" } };
+};
+
+// ── Registration sub-flow: confirmation ──────────────────────────
+
+export const patientRegisterConfirmHandler: StateHandler = async (
+  ctx: StateContext,
+) => {
+  const utterance = ctx.userUtterance.toLowerCase().trim();
+
+  if (/yes|correct|confirm|sounds good|okay|that'?s right/i.test(utterance)) {
+    // Registration complete — proceed to reason for visit.
+    return { nextState: "reason_for_visit" };
+  }
+
+  if (/no|wrong|change|not correct/i.test(utterance)) {
+    // Restart registration from the beginning.
+    ctx.session.slotValues.first_name = undefined;
+    ctx.session.slotValues.last_name = undefined;
+    ctx.session.slotValues.date_of_birth = undefined;
+    ctx.session.slotValues.phone_number = undefined;
+    return { nextState: "patient_register_name" };
+  }
+
+  return { nextState: "fallback_llm", payload: { reason: "register_confirm" } };
 };
 
 // ── Reason for Visit ────────────────────────────────────────────
@@ -249,6 +345,10 @@ export const dentalStateMachine: StateMachineRegistry = {
   consent_check: consentCheckHandler,
   patient_identify: patientIdentifyHandler,
   patient_register: patientRegisterHandler,
+  patient_register_name: patientRegisterNameHandler,
+  patient_register_dob: patientRegisterDobHandler,
+  patient_register_phone: patientRegisterPhoneHandler,
+  patient_register_confirm: patientRegisterConfirmHandler,
   reason_for_visit: reasonForVisitHandler,
   appointment_slot_select: appointmentSlotSelectHandler,
   confirm_appointment: confirmAppointmentHandler,

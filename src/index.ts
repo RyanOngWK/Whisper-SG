@@ -6,16 +6,22 @@
  */
 
 import { loadConfig } from "./infrastructure/config/schema.js";
-import { safeLog } from "./infrastructure/logging/redactor.js";
+import { safeLog, initLogger } from "./infrastructure/logging/redactor.js";
+import { OrchestratorRepository } from "./infrastructure/db/repository.js";
+import { RedisSessionStore } from "./infrastructure/session/redisStore.js";
 import { DeepgramAdapter } from "./services/asr/deepgramAdapter.js";
 import { ElevenLabsAdapter } from "./services/tts/elevenlabsAdapter.js";
 import { OpenAIAdapter } from "./services/llm/openaiAdapter.js";
 import { OpenDentalAdapter } from "./services/pms/openDentalAdapter.js";
 import { Orchestrator } from "./services/orchestrator/orchestrator.js";
 import { TwilioMediaGateway } from "./gateways/telephony/twilioHandler.js";
+import pg from "pg";
 
-function main(): void {
+async function main(): Promise<void> {
   const config = loadConfig();
+
+  // Initialize the HIPAA-aware structured logger.
+  initLogger(config.logLevel);
 
   safeLog("info", "Starting ABiz Voice AI", {
     context: {
@@ -27,6 +33,31 @@ function main(): void {
       pmsProvider: config.pms.provider,
     },
   });
+
+  // ── Database pool ──────────────────────────────────────────
+
+  const dbPool = new pg.Pool({
+    host: config.db.host,
+    port: config.db.port,
+    database: config.db.database,
+    user: config.db.user,
+    password: config.db.password,
+    ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
+    max: config.db.maxConnections,
+  });
+
+  const repo = new OrchestratorRepository(dbPool);
+
+  // ── Redis session store ────────────────────────────────────
+
+  const sessionStore = new RedisSessionStore({
+    host: config.redis.host,
+    port: config.redis.port,
+    ...(config.redis.password ? { password: config.redis.password } : {}),
+    sessionTtl: config.redis.sessionTtl,
+  });
+
+  await sessionStore.connect();
 
   // ── Instantiate concrete adapters ──────────────────────────
 
@@ -60,7 +91,7 @@ function main(): void {
 
   // ── Create the orchestrator ──────────────────────────────────
 
-  const orchestrator = new Orchestrator({ asr, tts, llm, pms });
+  const orchestrator = new Orchestrator({ asr, tts, llm, pms, repo, sessionStore });
 
   // ── Mount the Twilio media-stream gateway ────────────────────
 
@@ -77,20 +108,23 @@ function main(): void {
 
   const shutdown = (signal: string) => {
     safeLog("info", `${signal} received, shutting down`);
-    twilioGateway.shutdown().catch((err: unknown) => {
-      safeLog("error", "Shutdown error", {
-        error: { name: "ShutdownError", message: String(err) },
-      });
-    });
-    process.exit(0);
+    twilioGateway.shutdown()
+      .then(() => sessionStore.disconnect())
+      .then(() => dbPool.end())
+      .catch((err: unknown) => {
+        safeLog("error", "Shutdown error", {
+          error: { name: "ShutdownError", message: String(err) },
+        });
+      })
+      .finally(() => process.exit(0));
   };
 
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => { shutdown("SIGTERM"); });
+  process.on("SIGINT", () => { shutdown("SIGINT"); });
 }
 
 try {
-  main();
+  await main();
 } catch (err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   const name = err instanceof Error ? err.name : "Error";

@@ -20,8 +20,26 @@ import type { StateContext, StateTransition } from "../../core/state-machine/typ
 import { StateMachineEngine } from "../../core/state-machine/engine.js";
 import { dentalStateMachine } from "../../core/state-machine/handlers.js";
 import type { SessionState, CallId } from "../../types/call.js";
+import { asPatientId } from "../../types/call.js";
 import type { DentalFlowState } from "../../types/dental.js";
 import { safeLog } from "../../infrastructure/logging/redactor.js";
+import type { OrchestratorRepository } from "../../infrastructure/db/repository.js";
+
+// ── Session store interface ─────────────────────────────────────
+
+export interface SessionStore {
+  get(sessionId: string): Promise<SessionState | null>;
+  set(sessionId: string, session: SessionState): Promise<void>;
+  delete(sessionId: string): Promise<void>;
+}
+
+/** In-memory fallback when Redis is not available. */
+export class InMemorySessionStore implements SessionStore {
+  private map = new Map<string, SessionState>();
+  async get(sessionId: string) { return this.map.get(sessionId) ?? null; }
+  async set(sessionId: string, session: SessionState) { this.map.set(sessionId, session); }
+  async delete(sessionId: string) { this.map.delete(sessionId); }
+}
 
 // ── TTS prompts per state ───────────────────────────────────────
 
@@ -29,7 +47,11 @@ const STATE_PROMPTS: Partial<Record<string, string>> = {
   greeting: "Hello, thank you for calling the dental office. Before we proceed, I need to let you know this call may be recorded. Do I have your consent to continue?",
   consent_check: "I need to confirm: do you consent to having this call recorded for quality and scheduling purposes?",
   patient_identify: "Are you an existing patient with us, or is this your first visit?",
-  patient_register: "Let me collect some information to register you. What is your full name?",
+  patient_register: "Let me collect some information to register you.",
+  patient_register_name: "What is your full name?",
+  patient_register_dob: "What is your date of birth?",
+  patient_register_phone: "What is the best phone number to reach you?",
+  patient_register_confirm: "I have {first_name} {last_name}, date of birth {date_of_birth}, and phone {phone_number}. Is that correct?",
   reason_for_visit: "What brings you in today? For example, a cleaning, a toothache, or something else?",
   appointment_slot_select: "Let me find an available time for you. When would you prefer to come in?",
   confirm_appointment: "I have an opening on {date} at {time} with Dr. {provider} in {operatory}. Shall I book that for you?",
@@ -54,16 +76,18 @@ export interface OrchestratorDeps {
   tts: TtsAdapter;
   llm: LlmAdapter;
   pms: PmsAdapter;
+  repo?: OrchestratorRepository;
+  sessionStore?: SessionStore;
 }
-
-type SessionStore = Map<string, SessionState>;
 
 export class Orchestrator {
   private engine: StateMachineEngine;
-  /** In-memory session store (production: Redis-backed). */
-  private sessions: SessionStore = new Map();
+  /** Session store (Redis-backed in production, in-memory fallback). */
+  private sessions: SessionStore;
 
   constructor(private deps: OrchestratorDeps) {
+    this.sessions = deps.sessionStore ?? new InMemorySessionStore();
+
     // Wire the LLM fallback into the state machine.
     this.engine = new StateMachineEngine(
       dentalStateMachine,
@@ -83,8 +107,11 @@ export class Orchestrator {
     session: SessionState,
     onTtsAudio?: (callId: CallId, chunk: Buffer) => void,
   ): Promise<void> {
-    this.sessions.set(session.sessionId, session);
+    await this.sessions.set(session.sessionId, session);
     safeLog("info", "Call started", { callId: callId, sessionId: session.sessionId });
+
+    // Persist the call session to Postgres (fire-and-forget).
+    void this.deps.repo?.insertCallSession(session);
 
     // Start the ASR stream
     await this.deps.asr.connect(callId, {
@@ -108,7 +135,7 @@ export class Orchestrator {
     });
 
     // Kick off the state machine from greeting
-    await this.advanceStateMachine(callId, session, "greeting");
+    await this.advanceStateMachine(callId, session);
   }
 
   /**
@@ -116,10 +143,11 @@ export class Orchestrator {
    */
   async onCallEnd(callId: CallId, sessionId: string): Promise<void> {
     safeLog("info", "Call ended", { callId: callId, sessionId });
+    void this.deps.repo?.updateCallSessionEnd(sessionId, new Date());
     this.deps.tts.interrupt(callId);
     await this.deps.asr.disconnect(callId);
     await this.deps.tts.disconnect(callId);
-    this.sessions.delete(sessionId);
+    await this.sessions.delete(sessionId);
   }
 
   /**
@@ -136,37 +164,43 @@ export class Orchestrator {
     // Ignore interim results for state transitions — only react to finals.
     if (result.type !== "final") return;
 
-    const session = this.sessions.get(callId);
+    const session = await this.sessions.get(callId);
     if (!session) return;
 
     // Append to conversation turns
-    session.conversationTurns.push({
+    const turn = {
       index: session.conversationTurns.length,
-      speaker: "user",
+      speaker: "user" as const,
       transcript: result.transcript,
       rawTranscript: result.transcript,
       confidence: result.confidence,
       timestamp: new Date(),
-    });
+    };
+    session.conversationTurns.push(turn);
 
-    await this.advanceStateMachine(
-      callId,
-      session,
-      "patient_identify", // The caller's utterance should be processed by the *current* state
-      result,
+    // Persist the turn to Postgres (fire-and-forget).
+    void this.deps.repo?.insertConversationTurn(
+      session.sessionId,
+      turn.index,
+      turn.speaker,
+      turn.transcript,
+      turn.rawTranscript,
+      turn.confidence,
     );
+
+    await this.advanceStateMachine(callId, session, result);
   }
 
   /**
    * Advance the machine one step and dispatch side effects.
+   * Current state is always sourced from session.slotValues._currentState
+   * (set after each transition), defaulting to "greeting" on first call.
    */
   private async advanceStateMachine(
     callId: CallId,
     session: SessionState,
-    intendedState: string,
     asrResult?: AsrResult,
   ): Promise<void> {
-    // Determine the current state from the last transition or start fresh.
     const currentState =
       (session.slotValues._currentState as string | undefined) ?? "greeting";
 
@@ -207,6 +241,15 @@ export class Orchestrator {
 
     session.slotValues._currentState = transition.nextState;
 
+    // Persist the state transition to Postgres (fire-and-forget).
+    void this.deps.repo?.insertStateTransition(
+      session.sessionId,
+      currentState,
+      transition.nextState,
+      (transition.payload?.reason as string | undefined) ?? "deterministic",
+      transition.payload,
+    );
+
     // ── Side effects after transition resolved ─────────────────
 
     // 1. TTS: speak the prompt for the new state
@@ -220,32 +263,184 @@ export class Orchestrator {
         this.deps.tts.speak(callId, ttsInput);
 
         // Record the assistant's turn
-        session.conversationTurns.push({
+        const assistantTurn = {
           index: session.conversationTurns.length,
-          speaker: "assistant",
+          speaker: "assistant" as const,
           transcript: prompt,
           rawTranscript: prompt,
           confidence: 1.0,
           timestamp: new Date(),
-        });
+        };
+        session.conversationTurns.push(assistantTurn);
+
+        void this.deps.repo?.insertConversationTurn(
+          session.sessionId,
+          assistantTurn.index,
+          assistantTurn.speaker,
+          assistantTurn.transcript,
+          assistantTurn.rawTranscript,
+          assistantTurn.confidence,
+        );
       }
     }
 
     // 2. PMS side effects for specific states
+    if (transition.nextState === "reason_for_visit" && session.slotValues.first_name) {
+      await this.upsertPatientIfNew(callId, session);
+    }
+
     if (transition.nextState === "appointment_slot_select") {
-      // The orchestrator would call deps.pms.getAvailableSlots() here
-      safeLog("info", "Fetching appointment slots from PMS", { callId: callId });
+      await this.fetchAndStoreSlots(callId, session);
     }
 
     if (transition.nextState === "schedule_result" && transition.payload?.confirmed) {
-      // The orchestrator would call deps.pms.createAppointment() here
-      safeLog("info", "Booking appointment via PMS", { callId: callId });
+      await this.bookAppointment(callId, session);
     }
 
     // 3. If end_call, clean up
     if (transition.nextState === "end_call") {
       await this.onCallEnd(callId, session.sessionId);
     }
+  }
+
+  // ── PMS Integration ───────────────────────────────────────────
+
+  /**
+   * Register a new patient in the PMS if registration data was collected
+   * during the patient_register sub-flow.
+   */
+  private async upsertPatientIfNew(
+    callId: CallId,
+    session: SessionState,
+  ): Promise<void> {
+    try {
+      const firstName = (session.slotValues.first_name as string | undefined) ?? "";
+      const lastName = (session.slotValues.last_name as string | undefined) ?? "";
+      const dateOfBirth = (session.slotValues.date_of_birth as string | undefined) ?? "";
+      const phone = (session.slotValues.phone_number as string | undefined) ?? "";
+
+      if (!firstName) return;
+
+      const patient = await this.deps.pms.upsertPatient({
+        patientId: asPatientId(session.sessionId),
+        clinicId: session.clinicId,
+        firstName,
+        lastName,
+        dateOfBirth,
+        phoneNumbers: phone ? [phone] : [],
+        email: null,
+        insurance: null,
+        chartNumber: null,
+        preferredLanguage: (session.slotValues.language as string | undefined) ?? "en",
+        lastVisitAt: null,
+        isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      session.patientId = patient.patientId;
+      session.slotValues.patient_id = patient.patientId;
+      safeLog("info", "Patient registered in PMS", {
+        callId,
+        context: { patientId: patient.patientId },
+      });
+    } catch (err) {
+      safeLog("error", "PMS patient registration failed", {
+        callId,
+        error: { name: "PmsRegisterError", message: String(err) },
+      });
+    }
+  }
+
+  /**
+   * Fetch available appointment slots from the PMS and store them
+   * in the session for downstream use by the slot-select handler.
+   */
+  private async fetchAndStoreSlots(
+    callId: CallId,
+    session: SessionState,
+  ): Promise<void> {
+    try {
+      const appointmentType = (session.slotValues.appointment_type as string | undefined) ?? "cleaning";
+      const today = new Date();
+      const endDate = new Date(today);
+      endDate.setDate(endDate.getDate() + 14); // 2-week window
+
+      const query: Parameters<typeof this.deps.pms.getAvailableSlots>[0] = {
+        clinicId: session.clinicId,
+        appointmentType: appointmentType as never,
+        startDate: today.toISOString().slice(0, 10),
+        endDate: endDate.toISOString().slice(0, 10),
+        durationMinutes: 60,
+      };
+      const providerId = session.slotValues.provider_id as string | undefined;
+      if (providerId) query.providerId = providerId;
+
+      const slots = await this.deps.pms.getAvailableSlots(query);
+
+      session.slotValues._availableSlots = slots;
+      safeLog("info", "PMS slots fetched", {
+        callId,
+        context: { count: slots.length },
+      });
+    } catch (err) {
+      safeLog("error", "PMS slot fetch failed", {
+        callId,
+        error: { name: "PmsSlotError", message: String(err) },
+      });
+    }
+  }
+
+  /**
+   * Book a confirmed appointment via the PMS and store the result.
+   */
+  private async bookAppointment(
+    callId: CallId,
+    session: SessionState,
+  ): Promise<void> {
+    try {
+      const appointmentType =
+        (session.slotValues.appointment_type as string | undefined) ?? "consultation";
+      const date = (session.slotValues.appointment_date as string | undefined) ?? "";
+      const time = (session.slotValues.appointment_time as string | undefined) ?? "";
+
+      // Build the appointment from collected slots.
+      const appointment = await this.deps.pms.createAppointment({
+        clinicId: session.clinicId,
+        patientId: (session.patientId ?? session.sessionId) as never,
+        providerId: (session.slotValues.provider_id as string | undefined) ?? "0",
+        operatoryId: (session.slotValues.operatory_id as string | undefined) ?? "0",
+        type: appointmentType as never,
+        startTime: date && time ? `${date}T${time}:00` : new Date().toISOString(),
+        endTime: date && time
+          ? `${date}T${this.addMinutes(time, 60)}:00`
+          : new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        reason: (session.slotValues.reason_for_visit as string | undefined) ?? "",
+      });
+
+      session.slotValues.appointment_id = appointment.appointmentId;
+      session.slotValues.appointment_status = appointment.status;
+      safeLog("info", "Appointment booked via PMS", {
+        callId,
+        context: {
+          appointmentId: appointment.appointmentId,
+          status: appointment.status,
+        },
+      });
+    } catch (err) {
+      safeLog("error", "PMS appointment booking failed", {
+        callId,
+        error: { name: "PmsBookingError", message: String(err) },
+      });
+    }
+  }
+
+  private addMinutes(time: string, minutes: number): string {
+    const [h, m] = time.split(":").map(Number) as [number, number];
+    const total = h * 60 + m + minutes;
+    const nh = Math.floor(total / 60) % 24;
+    const nm = total % 60;
+    return `${String(nh).padStart(2, "0")}:${String(nm).padStart(2, "0")}`;
   }
 
   // ── LLM Fallback ──────────────────────────────────────────────
@@ -269,6 +464,7 @@ export class Orchestrator {
     };
 
     let decision: LlmDecision;
+    const llmStart = Date.now();
 
     try {
       decision = await this.deps.llm.resolve(llmCtx);
@@ -276,6 +472,19 @@ export class Orchestrator {
       safeLog("error", "LLM fallback failed", { error: { name: "LlmError", message: String(err) } });
       return { nextState: "end_call" };
     }
+
+    const latencyMs = Date.now() - llmStart;
+
+    // Persist the LLM fallback event to Postgres (fire-and-forget).
+    void this.deps.repo?.insertLlmFallbackEvent(
+      ctx.session.sessionId,
+      ctx.currentState ?? "fallback_llm",
+      ctx.reasonForFallback ?? "unknown",
+      this.deps.llm.provider,
+      this.deps.llm.config.model,
+      decision as unknown as Record<string, unknown>,
+      latencyMs,
+    );
 
     // Merge LLM-extracted slots into the session state
     if (Object.keys(decision.extractedSlots).length > 0) {
