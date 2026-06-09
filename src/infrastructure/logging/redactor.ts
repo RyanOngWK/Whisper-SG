@@ -1,12 +1,14 @@
 /**
- * HIPAA-aware logging: PII/PHI redaction layer.
+ * PDPA-aware logging: personal data redaction layer.
  *
  * Every log entry passes through the redactor before reaching the
- * underlying logger (pino). The redactor strips PII so raw PHI
- * never lands in any persistent log stream.
+ * underlying logger (pino). The redactor strips personal data so raw
+ * protected information never lands in any persistent log stream.
+ *
+ * Compliant with Singapore's Personal Data Protection Act (PDPA).
  *
  * Setup: call `initLogger(level)` once at startup to wire pino,
- * then use `safeLog()` everywhere for HIPAA-compliant logging.
+ * then use `safeLog()` everywhere for PDPA-compliant logging.
  */
 
 import pino from "pino";
@@ -18,16 +20,16 @@ const PI_PATTERNS: {
   pattern: RegExp;
   replacement: string | ((substring: string, ...args: string[]) => string);
 }[] = [
-    // SSN: 123-45-6789
+    // NRIC/FIN: S1234567A, T1234567B, F1234567C, G1234567D, M1234567E
     {
-      name: "ssn",
-      pattern: /\b\d{3}-\d{2}-\d{4}\b/g,
-      replacement: "[REDACTED-SSN]",
+      name: "nric",
+      pattern: /\b[STFGM]\d{7}[A-Z]\b/g,
+      replacement: "[REDACTED-NRIC]",
     },
-    // US phone: (123) 456-7890, 123-456-7890, +1 123-456-7890
+    // Singapore phone: +65 1234 5678, +65 12345678, 9123 4567, 81234567
     {
-      name: "phone_us",
-      pattern: /(\+1[\s-]?)?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}\b/g,
+      name: "phone_sg",
+      pattern: /(\+65[\s-]?)?\b[689]\d{3}[\s-]?\d{4}\b/g,
       replacement: "[REDACTED-PHONE]",
     },
     // Email
@@ -43,17 +45,11 @@ const PI_PATTERNS: {
         /\b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{4}\b|\b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b/g,
       replacement: "[REDACTED-DOB]",
     },
-    // MRN / Chart Number — alphanumeric, 5-20 chars, often all-numeric
+    // Singapore postal code (6 digits)
     {
-      name: "mrn",
-      pattern: /\b\d{5,20}\b/g,
-      replacement: "[REDACTED-ID]",
-    },
-    // Zip code (standalone 5-digit)
-    {
-      name: "zip",
-      pattern: /\b\d{5}(?:-\d{4})?\b/g,
-      replacement: "[REDACTED-ZIP]",
+      name: "postal_code",
+      pattern: /\b\d{6}\b/g,
+      replacement: "[REDACTED-POSTAL]",
     },
     // Common first-name / last-name heuristics (capitalized words in
     // natural language that look like names).  This is conservative:
@@ -68,7 +64,7 @@ const PI_PATTERNS: {
   ];
 
 /**
- * Redact all recognized PII/PHI patterns from a string.
+ * Redact all recognized personal data patterns from a string.
  * Returns a copy; the original is never mutated.
  */
 export function redact(text: string): string {
@@ -85,7 +81,7 @@ export function redact(text: string): string {
 }
 
 /**
- * Redact an arbitrary object deeply so no log-line leaks PHI.
+ * Redact an arbitrary object deeply so no log-line leaks personal data.
  *   - Strings are run through `redact()`.
  *   - Keys matching `sensitiveKeys` are fully replaced.
  *   - Nested objects and arrays are recursed.
@@ -98,13 +94,14 @@ const SENSITIVE_KEYS = new Set([
   "phoneNumbers",
   "phoneNumber",
   "email",
-  "ssn",
+  "nric",
+  "fin",
   "dob",
   "dateOfBirth",
   "birthdate",
   "address",
-  "zip",
-  "zipCode",
+  "postalCode",
+  "postal_code",
   "chartNumber",
   "insurance",
   "memberId",
@@ -152,7 +149,7 @@ export interface SafeLogEntry {
 }
 
 /**
- * Create a HIPAA-safe log entry.  All fields are redacted.
+ * Create a PDPA-safe log entry.  All fields are redacted.
  * Logs are written via pino (structured JSON to stdout).
  */
 export function safeLog(

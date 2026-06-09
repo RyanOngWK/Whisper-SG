@@ -31,8 +31,8 @@ export class OrchestratorRepository {
           session.clinicId,
           String(session.callId),
           "inbound",
-          "", // from_number: redacted for HIPAA
-          "", // to_number: redacted for HIPAA
+          "", // from_number: redacted for PDPA compliance
+          "", // to_number: redacted for PDPA compliance
           "active",
           session.patientId ?? null,
           session.consent,

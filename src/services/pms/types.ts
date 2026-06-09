@@ -1,8 +1,8 @@
 /**
  * PMS (Practice Management System) adapter interface.
  *
- * Clinics use different PMS platforms (Open Dental, Dentrix,
- * Eaglesoft, Curve Hero, etc.). This adapter lets the orchestrator
+ * Singapore clinics use different PMS platforms (Plato, Klinify,
+ * ClinicAssist, MediSYS, etc.). This adapter lets the orchestrator
  * query patients and book appointments without coupling to any
  * single vendor.
  */
@@ -15,7 +15,7 @@ import type {
   AppointmentSlot,
 } from "../../types/dental.js";
 
-export type PmsProvider = "open_dental" | "dentrix" | "eaglesoft" | "curve";
+export type PmsProvider = "plato" | "klinify" | "clinicassist" | "medisys";
 
 export interface PmsPagination {
   limit: number;

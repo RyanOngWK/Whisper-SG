@@ -24,7 +24,7 @@ export const configSchema = z.object({
     password: z.string(),
     ssl: z.coerce.boolean().default(false),
     maxConnections: z.coerce.number().int().default(20),
-    /** Days to retain PHI-bearing rows before automated purge. */
+    /** Days to retain personal data before automated purge (PDPA compliance). */
     retentionDays: z.coerce.number().int().default(90),
   }),
 
@@ -39,7 +39,7 @@ export const configSchema = z.object({
 
   // ── AWS / S3 ────────────────────────────────────────────────
   aws: z.object({
-    region: z.string().default("us-east-1"),
+    region: z.string().default("ap-southeast-1"),
     accessKeyId: z.string(),
     secretAccessKey: z.string(),
     s3: z.object({
@@ -60,7 +60,7 @@ export const configSchema = z.object({
     provider: z.enum(["deepgram", "assemblyai", "azure"]),
     apiKey: z.string(),
     model: z.string(),
-    language: z.string().default("en-US"),
+    language: z.string().default("en-SG"),
     interimResults: z.coerce.boolean().default(true),
     diarize: z.coerce.boolean().default(false),
   }),
@@ -83,13 +83,13 @@ export const configSchema = z.object({
     temperature: z.coerce.number().min(0).max(2).default(0.3),
     maxTokens: z.coerce.number().int().default(1024),
     systemPrompt: z.string().default(
-      "You are a dental clinic voice assistant. Your job is to understand the caller's intent and extract structured information from their speech. Never ask for or store SSNs. Always be polite and professional.",
+      "You are a clinic voice assistant for Singapore. Your job is to understand the caller's intent and extract structured information from their speech. Never ask for or store NRIC/FIN numbers. Always be polite and professional.",
     ),
   }),
 
   // ── PMS ─────────────────────────────────────────────────────
   pms: z.object({
-    provider: z.enum(["open_dental", "dentrix", "eaglesoft", "curve"]),
+    provider: z.enum(["plato", "klinify", "clinicassist", "medisys"]),
     apiUrl: z.string().optional(),
     apiKey: z.string().optional(),
   }),

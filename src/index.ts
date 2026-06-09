@@ -12,7 +12,7 @@ import { RedisSessionStore } from "./infrastructure/session/redisStore.js";
 import { DeepgramAdapter } from "./services/asr/deepgramAdapter.js";
 import { ElevenLabsAdapter } from "./services/tts/elevenlabsAdapter.js";
 import { OpenAIAdapter } from "./services/llm/openaiAdapter.js";
-import { OpenDentalAdapter } from "./services/pms/openDentalAdapter.js";
+import { SingaporePmsAdapter } from "./services/pms/singaporePmsAdapter.js";
 import { Orchestrator } from "./services/orchestrator/orchestrator.js";
 import { TwilioMediaGateway } from "./gateways/telephony/twilioHandler.js";
 import pg from "pg";
@@ -20,7 +20,7 @@ import pg from "pg";
 async function main(): Promise<void> {
   const config = loadConfig();
 
-  // Initialize the HIPAA-aware structured logger.
+  // Initialize the PDPA-aware structured logger.
   initLogger(config.logLevel);
 
   safeLog("info", "Starting ABiz Voice AI", {
@@ -84,9 +84,10 @@ async function main(): Promise<void> {
     systemPrompt: config.llm.systemPrompt,
   });
 
-  const pms = new OpenDentalAdapter(
+  const pms = new SingaporePmsAdapter(
     config.pms.apiUrl ?? "http://localhost:3023",
     config.pms.apiKey ?? "",
+    config.pms.provider,
   );
 
   // ── Create the orchestrator ──────────────────────────────────

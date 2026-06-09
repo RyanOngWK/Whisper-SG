@@ -1,6 +1,6 @@
-# ABiz — Voice AI for Dental Clinics
+# ABiz — Voice AI for Singapore Clinics
 
-**Enterprise-grade conversational AI that answers phones, schedules appointments, and triages emergencies for dental practices. HIPAA-ready. Closed-source SaaS.**
+**Enterprise-grade conversational AI that answers phones, schedules appointments, and triages emergencies for Singapore healthcare practices. PDPA-compliant. Closed-source SaaS.**
 
 ---
 
@@ -13,14 +13,14 @@
 - [Key Design Decisions](#key-design-decisions)
 - [Getting Started](#getting-started)
 - [Production Roadmap](#production-roadmap)
-- [Security & HIPAA](#security--hipaa)
+- [Security & PDPA](#security--pdpa)
 - [Operational Concerns](#operational-concerns)
 
 ---
 
 ## Architecture Overview
 
-ABiz is a **streaming voice agent** that sits between Twilio’s PSTN and a dental clinic’s Practice Management System (PMS). It receives inbound phone calls, transcribes them in real time, runs a deterministic state machine to route the conversation, falls back to an LLM when intent is ambiguous, responds via text-to-speech, and books appointments via the PMS.
+ABiz is a **streaming voice agent** that sits between Twilio’s PSTN and a Singapore clinic’s Practice Management System (PMS). It receives inbound phone calls, transcribes them in real time, runs a deterministic state machine to route the conversation, falls back to an LLM when intent is ambiguous, responds via text-to-speech, and books appointments via the PMS.
 
 ```
   Patient Phone Call
@@ -47,7 +47,7 @@ ABiz is a **streaming voice agent** that sits between Twilio’s PSTN and a dent
     ▼         ▼         ▼         ▼
 ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐
 │ ASR  │ │State │ │ LLM  │ │  PMS   │
-│Deep- │ │Mach. │ │OpenAI│ │Open    │
+│Deep- │ │Mach. │ │OpenAI│ │Plato   │
 │gram  │ │(core)│ │      │ │Dental  │
 └──────┘ └──────┘ └──────┘ └────────┘
     │                              │
@@ -135,7 +135,7 @@ general_query   ──► fallback_llm
 | `patient_register` | Entry point for new patient registration sub-flow. |
 | `patient_register_name` | Collects full name (regex extract + LLM fallback). |
 | `patient_register_dob` | Collects date of birth (multi-format regex + LLM fallback). |
-| `patient_register_phone` | Collects phone number (US format regex + LLM fallback). |
+| `patient_register_phone` | Collects phone number (Singapore format regex + LLM fallback). |
 | `patient_register_confirm` | Confirms collected info. Writes to PMS on yes, restarts on no. |
 | `reason_for_visit` | Maps utterance to appointment type (cleaning, crown, extraction, etc.). |
 | `appointment_slot_select` | Fetches available time slots from PMS, presents options. |
@@ -179,7 +179,7 @@ src/
 │   │   └── openaiAdapter.ts        # OpenAI structured JSON output
 │   └── pms/
 │       ├── types.ts                # PmsAdapter interface
-│       └── openDentalAdapter.ts    # Open Dental v24+ REST API
+│       └── singaporePmsAdapter.ts    # Singapore PMS REST API
 │
 ├── gateways/                       # I/O boundary
 │   └── telephony/
@@ -195,7 +195,7 @@ src/
 │   ├── session/
 │   │   └── redisStore.ts          # Redis-backed session store
 │   └── logging/
-│       └── redactor.ts            # HIPAA PII/PHI redaction + pino logger
+│       └── redactor.ts            # PDPA redaction + pino logger
 │
 └── index.ts                        # Entrypoint — wires everything, starts server
 
@@ -234,11 +234,11 @@ The TTS adapter exposes `interrupt()`. If the patient starts speaking while the 
 
 ### 6. Adapter pattern for vendor flexibility
 
-Every external service (ASR, TTS, LLM, PMS) is behind an interface. Swap Deepgram for AssemblyAI, ElevenLabs for Polly, OpenAI for Claude, or Open Dental for Dentrix — without touching the state machine or orchestrator logic.
+Every external service (ASR, TTS, LLM, PMS) is behind an interface. Swap Deepgram for AssemblyAI, ElevenLabs for Polly, OpenAI for Claude, or Plato for ClinicAssist — without touching the state machine or orchestrator logic.
 
-### 7. HIPAA-first logging
+### 7. PDPA-first logging
 
-All logging goes through `safeLog()` which redacts PII/PHI patterns (SSN, phone, email, DOB, names) and writes structured JSON via pino to stdout. Raw transcripts never reach any log stream. Column-level encryption for PHI-bearing DB columns.
+All logging goes through `safeLog()` which redacts personal data patterns (NRIC/FIN, phone, email, DOB, names) and writes structured JSON via pino to stdout. Raw transcripts never reach any log stream. Column-level encryption for personal data bearing DB columns.
 
 ---
 
@@ -253,7 +253,7 @@ All logging goes through `safeLog()` which redacts PII/PHI patterns (SSN, phone,
 - Deepgram API key
 - ElevenLabs API key
 - OpenAI API key
-- Open Dental instance (v24+ with REST API enabled)
+- Plato, Klinify, ClinicAssist, or MediSYS PMS instance
 
 ### Setup
 
@@ -290,156 +290,87 @@ npm run test         # then test
 
 ## Production Roadmap
 
-What follows is a prioritized list of work needed to go from prototype to production-grade SaaS. Ordered by dependency and risk.
+### Phase 1 — Core Platform ✅ COMPLETE
 
-### Phase 1 — Critical Blockers ✅ COMPLETE
-
-*All 8 items implemented. The system can now handle a real phone call end-to-end.*
+*The system can handle a real phone call end-to-end: answer, transcribe, route via state machine, speak TTS responses, and book appointments via the Plato PMS adapter. PDPA-compliant logging and data retention are in place.*
 
 | # | Item | Implementation |
 |---|---|---|
-| 1.1 | Audio Normalizer | `audioNormalizer.ts` — Full G.711 μ-law decoder (ITU-T lookup table) + linear interpolation 8→16 kHz resampler producing valid 16-bit little-endian PCM. |
-| 1.2 | PMS Calls | `orchestrator.ts` — `fetchAndStoreSlots()` calls `pms.getAvailableSlots()` with 2-week window; `bookAppointment()` calls `pms.createAppointment()`; `upsertPatientIfNew()` calls `pms.upsertPatient()`. |
-| 1.3 | patient_register sub-flow | 4 new `DentalState` entries: `patient_register_name` → `_dob` → `_phone` → `_confirm`. Each has a pure handler with regex extraction and LLM fallback. TTS prompts templated with collected slots. |
-| 1.4 | State tracking fix | Removed dead `intendedState` param from `advanceStateMachine`. `slotValues._currentState` is the single source of truth. |
-| 1.5 | Database persistence | `repository.ts` — `OrchestratorRepository` with 5 write methods. Wired as fire-and-forget via `void`. `index.ts` creates a `pg.Pool` and passes to orchestrator. |
-| 1.6 | Redis session store | `redisStore.ts` — `RedisSessionStore` using ioredis with JSON serialization, TTL expiry, and retry strategy. Orchestrator accepts pluggable `SessionStore` interface with `InMemorySessionStore` fallback. |
-| 1.7 | Real logging | `redactor.ts` — `safeLog()` now writes via pino (structured JSON to stdout). `initLogger(level)` called at startup from `index.ts`. |
-| 1.8 | Down migration | `down.sql` — Drops all tables + functions in reverse dependency order. |
+| 1 | Audio Normalizer | `audioNormalizer.ts` — Full G.711 μ-law decoder (ITU-T lookup table) + linear interpolation 8→16 kHz resampler producing valid 16-bit little-endian PCM. |
+| 2 | State Machine | 17 states in `handlers.ts` — greeting → consent → patient identify → register → schedule → end. All handlers are pure, all side effects dispatched by the orchestrator. |
+| 3 | LLM Fallback | `engine.ts` — When a deterministic handler cannot resolve intent, the LLM is invoked. Returns structured `LlmDecision` (nextState + extractedSlots + responseText). |
+| 4 | Singapore PMS Adapter | `singaporePmsAdapter.ts` — Vendor-agnostic REST adapter supporting Plato (current), Klinify, ClinicAssist, MediSYS. `findPatients`, `getAvailableSlots`, `createAppointment`, `upsertPatient`. |
+| 5 | PDPA Logging & Redaction | `redactor.ts` — NRIC/FIN, SG phone, postal code, email, DOB, name redaction. Structured JSON logging via pino. `safeLog()` used everywhere. |
+| 6 | Database Persistence | `repository.ts` — Call sessions, conversation turns, state transitions, LLM fallback events all persisted (fire-and-forget via `void`). |
+| 7 | Redis Session Store | `redisStore.ts` — ioredis-backed with JSON serialization, TTL expiry, retry strategy. Falls back to `InMemorySessionStore` if Redis is unavailable. |
+| 8 | Migration Runner | `migrate.ts` — Custom runner (no Knex/Drizzle/Prisma). First migration: `001_initial_schema` with clinics, providers, operatories, sessions, turns, transitions, appointments, and `purge_expired_data()` function. |
 
 ---
 
-### Phase 2 — Production Hardening (needed before GA)
+### Phase 2 — Production MVP (7 steps to first deployment)
 
-#### 2.1 Tests
-
-**Directory:** `tests/`
-
-There are zero test files. Vitest is configured but unused. Priority order:
-1. **State machine handler tests** — Pure functions, easiest to test. Every handler should have tests for happy path and edge cases (ambiguous input, empty input, conflicting slots).
-2. **State machine engine tests** — Test the LLM fallback invocation path, event emission, and invalid state handling.
-3. **Redaction tests** — Verify all PII patterns are caught.
-4. **Adapter integration tests** — Mock the WebSocket/HTTP layer, test the adapter’s message parsing.
-5. **Orchestrator integration tests** — Mock adapters, simulate full call flows.
-6. **End-to-end tests** — Spin up the gateway, send synthetic Twilio events, verify state transitions and TTS output.
-
-#### 2.2 Multiple ASR/TTS Provider Support
-
-Create adapters for the providers declared in the type unions:
-- **ASR:** `assemblyaiAdapter.ts`, `azureAdapter.ts`
-- **TTS:** `pollyAdapter.ts`, `azureAdapter.ts`, `deepgramAuraAdapter.ts`
-
-Multi-provider support is a competitive differentiator — some clinics will have existing contracts with specific vendors.
-
-#### 2.3 Multiple LLM Provider Support
-
-Create `anthropicAdapter.ts` and `googleAdapter.ts`. Anthropic’s Claude is popular in healthcare due to stronger safety guarantees.
-
-#### 2.4 Multiple PMS Provider Support
-
-Create adapters for Dentrix, Eaglesoft, and Curve. Open Dental covers ~40% of the US market. The other three cover most of the rest. PMS integration is the hardest adapter to write — every PMS has a different data model.
-
-#### 2.5 Call Recording to S3
-
-Implement recording upload: after call end, encode the full audio stream (or retrieve from Twilio’s recording API) and upload to the configured S3 bucket with KMS encryption. Update `call_sessions` with the S3 key.
-
-#### 2.6 Graceful Degradation
-
-If the LLM is down, the system should continue with deterministic routing only (no fallback — apologize and ask to rephrase). If the PMS is down, the system should queue appointment requests for later sync. If ASR is down, the call should be transferred to a human or voicemail.
-
-#### 2.7 Health Check Endpoint
-
-Add an HTTP health check endpoint that verifies connectivity to Postgres, Redis, and all configured adapters. Needed for Kubernetes liveness/readiness probes and load balancer health checks.
-
-#### 2.8 Metrics & Observability
-
-Expose Prometheus metrics:
-- Call volume (total, active, completed, failed)
-- State machine state distribution (a gauge per state)
-- LLM fallback rate (fallbacks per call)
-- ASR/TTS/LLM/PMS latency histograms
-- Audio quality metrics (packet loss, jitter from Twilio)
-
-#### 2.9 Rate Limiting & Concurrency
-
-Implement per-clinic concurrency limits. If Clinic A has 3 phone lines and 4 calls come in simultaneously, the 4th should get a busy signal or queue — not crash the server.
+| # | Item | What | File(s) |
+|---|---|---|---|
+| 2.1 | **SG phone regex fix** | Current `patient_register_phone` handler uses US phone pattern. Switch to SG format: `+65 9123 4567`, `81234567`. | `handlers.ts` |
+| 2.2 | **State machine handler tests** | 17 handlers × happy path + edge cases. Pure functions — no mocking needed. | `tests/core/state-machine/handlers.test.ts` |
+| 2.3 | **Redaction tests** | Verify NRIC/FIN (`S1234567A`), SG phone (`9123 4567`), postal code (6-digit), email, DOB, name patterns. Verify `SENSITIVE_KEYS` are stripped from objects. | `tests/infrastructure/logging/redactor.test.ts` |
+| 2.4 | **State machine engine tests** | Test `advance()` for valid/invalid states, LLM fallback invocation, event emission. | `tests/core/state-machine/engine.test.ts` |
+| 2.5 | **PMS adapter tests** | Mock `global.fetch` — test patient CRUD, slot queries, appointment CRUD, health check, error handling. | `tests/services/pms/singaporePmsAdapter.test.ts` |
+| 2.6 | **S3 call recording** | Use Twilio's Recording API to retrieve call audio post-call, upload to S3 bucket with KMS encryption, store object key in `call_sessions.metadata`. | `src/infrastructure/storage/s3Storage.ts` + wiring in `orchestrator.ts` |
+| 2.7 | **AWS SDK dependency** | Add `@aws-sdk/client-s3` for S3 uploads. | `package.json` |
 
 ---
 
-### Phase 3 — Competitive Features (post-GA)
+### Phase 3 — Production Hardening
 
-#### 3.1 Outbound Calling
-
-Add support for appointment reminders, recall notices, and post-treatment follow-ups via outbound Twilio calls. This requires a new state machine flow (`outbound_reminder`, `outbound_recall`, `outbound_follow_up`) and Twilio outbound call initiation.
-
-#### 3.2 Multi-Language Support
-
-The config and session state already carry a `language` field. Implement TTS prompts in Spanish and other languages. The LLM system prompt should adapt based on language. ASR models should be selected per language.
-
-#### 3.3 IVR/Self-Service Menu
-
-Add a DTMF-driven menu for patients who prefer button-press navigation (e.g., "Press 1 for appointments, 2 for billing"). Twilio Media Streams supports DTMF events.
-
-#### 3.4 Live Agent Handoff
-
-Add a `transfer_to_human` state that bridges the Twilio call to a human agent via Twilio’s `<Dial>` verb or a queue system. The AI should hand off context (summary of what’s been collected so far) to the agent.
-
-#### 3.5 Sentiment & Escalation Detection
-
-Add sentiment analysis on transcripts. If the patient sounds angry or frustrated, escalate to a human. This can be done via the LLM or a dedicated sentiment model.
-
-#### 3.6 Clinic Portal / Dashboard
-
-Build a web dashboard for clinic admins to view call logs, listen to recordings, see appointment booking analytics, and configure AI behavior (prompts, office hours, appointment types).
-
-#### 3.7 Custom Voice Cloning
-
-Allow clinics to train a custom TTS voice that matches their brand (or a specific dentist). ElevenLabs supports professional voice cloning.
+| # | Item |
+|---|---|
+| 3.1 | **Orchestrator integration tests** — Mock all adapters, simulate full call flows end-to-end (`tests/services/orchestrator/orchestrator.test.ts`). |
+| 3.2 | **Multiple PMS provider support** — Flesh out adapters for Klinify, ClinicAssist, MediSYS once their APIs are available. |
+| 3.3 | **Health check endpoint** — HTTP endpoint verifying Postgres, Redis, and all adapter connectivity. Needed for Kubernetes probes. |
+| 3.4 | **Graceful degradation** — LLM unavailable → deterministic routing only. PMS down → queue appointment requests for later sync. ASR down → transfer to voicemail. |
+| 3.5 | **Metrics & observability** — Prometheus metrics: call volume, state distribution, LLM fallback rate, ASR/TTS/LLM/PMS latency histograms. |
+| 3.6 | **Rate limiting & concurrency** — Per-clinic concurrency caps. Clinic A has 3 lines → 4th call gets busy signal, not a crash. |
 
 ---
 
-### Phase 4 — Enterprise Readiness
+### Phase 4 — Competitive Features (post-GA)
 
-#### 4.1 SOC 2 / HITRUST Compliance
-
-Engage a compliance auditor. Ensure all PHI data flows are documented, encrypted at rest and in transit, with audit trails for every access. Implement RBAC for the dashboard.
-
-#### 4.2 Multi-Region Deployment
-
-Deploy in AWS us-east-1 and us-west-2 with active-active failover. Twilio Media Streams should route to the nearest region. Redis and Postgres need cross-region replication.
-
-#### 4.3 SLA & SLO Tracking
-
-Define SLOs: 99.9% uptime, < 1s TTS latency from state transition to first audio byte, < 300ms ASR final result latency, < 5% LLM fallback rate. Track them via the observability stack.
-
-#### 4.4 Penetration Testing
-
-Engage a third-party security firm for penetration testing of the WebSocket gateway, API endpoints, and infrastructure.
+| # | Item |
+|---|---|
+| 4.1 | **Outbound calling** — Appointment reminders, recall notices, post-treatment follow-ups via Twilio outbound. |
+| 4.2 | **Multi-language** — TTS/ASR/LLM in Mandarin, Malay, Tamil (Singapore's official languages). Config already carries `language` field. |
+| 4.3 | **Live agent handoff** — `transfer_to_human` state that bridges to a human agent via Twilio `<Dial>`, handing off conversation context. |
+| 4.4 | **Sentiment & escalation** — Detect frustration → escalate to human via the LLM or a dedicated model. |
+| 4.5 | **Clinic dashboard** — Web UI for call logs, recordings, appointment analytics, AI behavior config (prompts, office hours, appointment types). |
+| 4.6 | **PDPA audit engagement** — Engage a compliance auditor for formal PDPA certification. Document all data flows, RBAC for dashboard, audit trails. |
+| 4.7 | **Multi-region deployment** — AWS ap-southeast-1 (Singapore) + ap-southeast-3 (Jakarta) active-active failover. Cross-region Redis/Postgres replication. |
+| 4.8 | **Penetration testing** — Third-party security firm pentest of WebSocket gateway, API endpoints, and infrastructure. |
 
 ---
 
-## Security & HIPAA
+## Security & PDPA
 
 ### Data Classification
 
 | Data | Classification | Storage |
 |---|---|---|
-| Call transcripts | PHI | Encrypted in Postgres (`conversation_turns`), purged per retention policy |
-| Patient demographics | PHI | Encrypted in PMS (not stored in ABiz DB — syncs from PMS) |
-| Call metadata (duration, timestamps) | PII | Postgres (`call_sessions`), purged per retention policy |
-| Call recordings | PHI | S3 with KMS encryption, lifecycle policy for deletion |
+| Call transcripts | personal data | Encrypted in Postgres (`conversation_turns`), purged per retention policy |
+| Patient demographics | personal data | Encrypted in PMS (not stored in ABiz DB — syncs from PMS) |
+| Call metadata (duration, timestamps) | Personal data | Postgres (`call_sessions`), purged per retention policy |
+| Call recordings | personal data | S3 with KMS encryption, lifecycle policy for deletion |
 | API keys / secrets | Secret | Environment variables, never logged or committed |
-| ASR/TTS audio streams | PHI | Ephemeral — processed in-memory, never stored |
+| ASR/TTS audio streams | personal data | Ephemeral — processed in-memory, never stored |
 
 ### Redaction Rules
 
 All logging routes through `safeLog()` in `src/infrastructure/logging/redactor.ts`. Patterns redacted:
-- SSN (###-##-####)
-- Phone numbers (US formats)
+- NRIC/FIN (S1234567A format)
+- Phone numbers (Singapore formats)
 - Email addresses
 - Dates of birth
 - Medical record numbers / patient IDs
-- ZIP codes
+- Postal codes
 - Name phrases ("my name is X", "I'm X")
 
 Object keys named `transcript`, `rawTranscript`, `firstName`, `lastName`, `phone`, `email`, `ssn`, `dob`, `address`, `insurance`, `memberId` are replaced with `"[REDACTED]"` at any depth.
@@ -447,12 +378,12 @@ Object keys named `transcript`, `rawTranscript`, `firstName`, `lastName`, `phone
 ### Encryption
 
 - **In transit:** All external service connections use TLS (HTTPS/WSS). Twilio WebSocket uses WSS.
-- **At rest:** PHI columns in Postgres are encrypted at the application layer before insert (via KMS or pgcrypto). S3 buckets enforce `aws:kms` encryption.
+- **At rest:** personal data columns in Postgres are encrypted at the application layer before insert (via KMS or pgcrypto). S3 buckets enforce `aws:kms` encryption.
 - **Key management:** AWS KMS for S3 and column-level encryption keys. Secrets in env vars (in production, use AWS Secrets Manager or HashiCorp Vault).
 
 ### Retention
 
-The `purge_expired_data(retention_days)` stored function deletes all PHI-bearing rows older than the configured retention period (default: 90 days). This should be run as a scheduled job (cron / Kubernetes CronJob).
+The `purge_expired_data(retention_days)` stored function deletes all personal data bearing rows older than the configured retention period (default: 90 days). This should be run as a scheduled job (cron / Kubernetes CronJob).
 
 ---
 

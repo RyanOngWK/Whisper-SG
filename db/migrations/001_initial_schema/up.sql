@@ -7,14 +7,14 @@
 CREATE TABLE clinics (
     clinic_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT NOT NULL,
-    external_id TEXT UNIQUE,   -- PMS-side identifier (e.g. Open Dental clinic number)
-    timezone    TEXT NOT NULL DEFAULT 'America/Chicago',
+    external_id TEXT UNIQUE,   -- PMS-side identifier (e.g. Plato clinic number)
+    timezone    TEXT NOT NULL DEFAULT 'Asia/Singapore',
     is_active   BOOLEAN NOT NULL DEFAULT true,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ── Providers (dentists / hygienists) ─────────────────────────
+-- ── Providers (doctors / dentists / hygienists) ──────────────
 
 CREATE TABLE providers (
     provider_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -22,7 +22,7 @@ CREATE TABLE providers (
     external_id TEXT,          -- PMS-side provider ID
     first_name  TEXT NOT NULL,
     last_name   TEXT NOT NULL,
-    npi         TEXT,          -- National Provider Identifier
+    mcr         TEXT,          -- Singapore Medical Council registration number
     is_active   BOOLEAN NOT NULL DEFAULT true,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -81,7 +81,7 @@ CREATE TABLE conversation_turns (
     session_id     UUID NOT NULL REFERENCES call_sessions(session_id) ON DELETE CASCADE,
     turn_index     INT NOT NULL,
     speaker        TEXT NOT NULL CHECK (speaker IN ('user', 'assistant')),
-    transcript     TEXT NOT NULL,                 -- PII/PHI-bearing — must be encrypted
+    transcript     TEXT NOT NULL,                 -- personal data — must be encrypted
     raw_transcript TEXT NOT NULL,                 -- ASR raw output (pre-redaction)
     confidence     REAL NOT NULL DEFAULT 0.0,
     recorded_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -148,9 +148,9 @@ CREATE INDEX idx_appts_clinic  ON appointments(clinic_id);
 CREATE INDEX idx_appts_patient ON appointments(patient_id);
 CREATE INDEX idx_appts_start   ON appointments(scheduled_start);
 
--- ── Data Retention: scheduled purge for PHI-bearing rows ──────
+-- ── Data Retention: scheduled purge for personal data ─────────
 -- This function is called by a cron job or pg_cron.
--- All PHI-bearing tables are truncated after retention_days.
+-- All personal-data-bearing tables are truncated after retention_days.
 
 CREATE OR REPLACE FUNCTION purge_expired_data(retention_days INT)
 RETURNS void AS $$

@@ -71,7 +71,7 @@ Extracted slots may include:
 - patient_name, date_of_birth, phone_number, appointment_type,
   appointment_date, appointment_time, reason_for_visit,
   is_emergency ("true"/"false"), is_new_patient ("true"/"false"),
-  preferred_provider, insurance_provider
+  preferred_provider
 
 Current state: {current_state}
 Reason for fallback: {reason}
@@ -91,7 +91,7 @@ export class OpenAIAdapter implements LlmAdapter {
       temperature: 0.3,
       maxTokens: 1024,
       systemPrompt:
-        "You are a dental clinic voice assistant. Help patients book appointments, answer questions, and triage emergencies. Be polite, concise, and professional.",
+        "You are a clinic voice assistant for a Singapore healthcare practice. Help patients book appointments, answer questions, and triage emergencies. Be polite, concise, and professional.",
       ...configOverrides,
     };
   }

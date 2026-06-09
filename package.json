@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Enterprise Voice AI SaaS for Dental Clinics — HIPAA-ready",
+  "description": "Enterprise Voice AI SaaS for Singapore Clinics — PDPA-ready",
   "engines": {
     "node": ">=20.0.0"
   },
